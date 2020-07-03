@@ -5,8 +5,6 @@
 #include <cstring>
 #include <stdexcept>
 
-//#include <format>
-
 class Bitstream
 {
 private:
@@ -23,7 +21,7 @@ private:
                 ResizeNeeded(SizeNeeded);
             Data = (char*)realloc(Data, CurrentAllocated);
             if (!Data)
-                throw std::runtime_error("realloc returned zero");
+                throw std::runtime_error("realloc returned invalid pointer");
         };
     };
 
@@ -37,9 +35,23 @@ public:
     {
         Data = (char*)malloc(Size);
         if (!Data)
-            throw std::runtime_error("realloc returned zero");
+            throw std::runtime_error("realloc returned invalid pointer");
         CurrentAllocated = Size;
     };
+
+    template <typename T> void WriteArray(T* Array, const size_t Count)
+    {
+        static_assert(std::is_pointer_v<T>, "not an array (pointer)");
+
+        const size_t Size = Count * sizeof(T);
+
+        const size_t NewSize = Offset + Size;
+        ResizeNeeded(NewSize);
+
+        memcpy(Data + Offset, Array, Size);
+        Offset += Size;
+    };
+
 
     template <typename T> const size_t EncodedSize(T Value) const
     {
@@ -116,6 +128,19 @@ public:
             throw std::runtime_error("out of bounds arbitrary read");
     };
 
+    template <typename T> void WriteRaw(T Value)
+    {
+        static_assert(std::is_scalar_v<T>, "not an operable type (non-scalar)");
+
+        constexpr size_t Size = sizeof(T);
+
+        const size_t NewSize = Offset + Size;
+        ResizeNeeded(NewSize);
+
+        *(T*)(Data + Offset) = Value;
+        Offset += Size;
+    };
+
     template <typename T> void WriteEnc(T Value)
     {
         static_assert(std::is_arithmetic_v<T>, "not an operable type (arithmetic not supported)");
@@ -139,48 +164,25 @@ public:
         };
     };
 
-    template <typename T> void WriteRaw(T Value)
+    inline void WriteEncString(const char* String, const size_t Size)
     {
-        static_assert(std::is_scalar_v<T>, "not an operable type (non-scalar)");
-
-        constexpr size_t Size = sizeof(T);
-
-        const size_t NewSize = Offset + Size;
-        ResizeNeeded(NewSize);
-
-        *(T*)(Data + Offset) = Value;
-        Offset += Size;
+        WriteEnc<size_t>(Size);
+        WriteArray<char>(String, Size);
+    }
+    inline void WriteEncString(const std::string& String, const size_t Size)
+    {
+        WriteEnc<size_t>(Size);
+        WriteArray<char>(String.c_str(), Size);
     };
 
-    void WriteCString(const char* String, const size_t Size)
+    std::string ReadString()
     {
-        const size_t NewSize = Offset + Size;
-        ResizeNeeded(NewSize);
+        auto String = Data + Offset;
+        const size_t Size = strlen(String);
 
-        memcpy(Data + Offset, String, Size);
         Offset += Size;
-    };
 
-    void WriteCString(const std::string& String, const size_t Size)
-    {
-        const size_t NewSize = Offset + Size;
-        ResizeNeeded(NewSize);
-
-        memcpy(Data + Offset, String.c_str(), Size);
-        Offset += Size;
-    };
-
-    template <typename T> void WriteArray(T Array, const size_t Count)
-    {
-        static_assert(std::is_pointer_v<T>, "not an array (pointer)");
-
-        const size_t Size = Count * sizeof(std::remove_pointer_t<T>);
-
-        const size_t NewSize = Offset + Size;
-        ResizeNeeded(NewSize);
-
-        memcpy(Data + Offset, Array, Size);
-        Offset += Size;
+        return std::string(String, Size);
     };
 
     std::string ReadEncString()
@@ -193,9 +195,9 @@ public:
         return String;
     };
 
-    void FlushToFile(const std::string Filename)
+    void FlushToFile(const std::string Filename, int Filemode = std::ios::trunc | std::ios::binary)
     {
-        std::ofstream F(Filename, std::ios::trunc | std::ios::binary);
+        std::ofstream F(Filename, Filemode);
         F.write(Data, Offset);
         F.close();
     };
