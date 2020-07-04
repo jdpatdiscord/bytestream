@@ -52,7 +52,6 @@ public:
         Offset += Size;
     };
 
-
     template <typename T> const size_t EncodedSize(T Value) const
     {
         size_t ValueSize = 0;
@@ -108,6 +107,8 @@ public:
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
+        auto BeginOffset = ReadOffset;
+
         if (ReadOffset <= CurrentAllocated)
         {
             T Value = 0;
@@ -122,7 +123,7 @@ public:
                     return Value;
             };
             if (NextOffset != nullptr)
-                *NextOffset = Shift / 7; /* Divides by 7 to get how many bytes iterated */
+                *NextOffset = BeginOffset + (Shift / 7); /* Divides by 7 to get how many bytes iterated */
         }
         else
             throw std::runtime_error("out of bounds arbitrary read");
@@ -202,7 +203,8 @@ public:
         F.close();
     };
 
-    ~Bitstream() {
+    ~Bitstream()
+    {
         free(Data);
     };
-};  
+};
