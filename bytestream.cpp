@@ -35,7 +35,7 @@ public:
     {
         Data = (char*)malloc(Size);
         if (!Data)
-            throw std::runtime_error("realloc returned invalid pointer");
+            throw std::runtime_error("malloc returned invalid pointer");
         CurrentAllocated = Size;
     };
 
@@ -97,7 +97,7 @@ public:
 
         if (NextOffset != nullptr)
             *NextOffset = ReadOffset + sizeof(T);
-        if (ReadOffset <= CurrentAllocated)
+        if (ReadOffset + sizeof(T) <= CurrentAllocated)
             return *(T*)(Data + ReadOffset);
         else
             throw std::runtime_error("out of bounds arbitrary read");
