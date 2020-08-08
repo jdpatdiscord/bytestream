@@ -4,12 +4,12 @@ inline void Bitstream::ResizeNeeded(const size_t SizeNeeded)
 {
     if (CurrentAllocated < SizeNeeded)
     {
-        CurrentAllocated *= 2;
-        if (CurrentAllocated < SizeNeeded) /* Double buffer until size met */
-            ResizeNeeded(SizeNeeded);
+        while (CurrentAllocated < SizeNeeded)
+            CurrentAllocated <<= 1;
+
         Data = (char*)realloc(Data, CurrentAllocated);
         if (!Data)
-            throw std::runtime_error("realloc returned invalid pointer");
+            throw std::runtime_error("realloc returned invalid memory");
     };
 };
 
@@ -20,15 +20,13 @@ Bitstream::Bitstream() : Offset(0), CurrentAllocated(1)
 
 void Bitstream::Preallocate(const size_t Size)
 {
-    Data = Data ? realloc(CurrentAllocated += Size) : (char*)malloc(Size);
+    Data = (char*)realloc(Data, CurrentAllocated += Size);
     if (!Data)
         throw std::runtime_error("malloc returned invalid pointer");
 };
 
 template <typename T> void Bitstream::WriteArray(T* Array, const size_t Count)
 {
-    static_assert(std::is_pointer_v<T>, "not an array (pointer)");
-
     const size_t Size = Count * sizeof(T);
 
     const size_t NewSize = Offset + Size;
@@ -55,6 +53,10 @@ template <typename T> T Bitstream::ReadRaw()
 {
     static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
+    if constexpr (ReadBoundsCheck)
+        if (Offset >= CurrentAllocated)
+            throw std::runtime_error("out of bounds read");
+
     T Value = *(T*)(Data + Offset);
     Offset += sizeof(T);
     return Value;
@@ -69,6 +71,10 @@ template <typename T> T Bitstream::ReadEnc()
 
     while (true)
     {
+        if constexpr (ReadBoundsCheck)
+            if (Offset > CurrentAllocated)
+                throw std::runtime_error("out of bounds read");
+
         auto Byte = *(Data + Offset++);
         Value |= (Byte & 0x7f) << Shift;
         Shift += 7;
@@ -154,34 +160,52 @@ template <typename T> void Bitstream::WriteEnc(T Value)
 inline void Bitstream::WriteEncString(const char* String, const size_t Size)
 {
     WriteEnc<size_t>(Size);
-    WriteArray<char>(String, Size);
+    WriteArray<const char>(String, Size);
 };
 
 inline void Bitstream::WriteEncString(const std::string& String, const size_t Size)
 {
     WriteEnc<size_t>(Size);
-    WriteArray<char>(String.c_str(), Size);
+    WriteArray<const char>(String.c_str(), Size);
 };
 
 std::string Bitstream::ReadString()
 {
-    auto String = Data + Offset;
+    auto Begin = Data + Offset;
+    auto String = Begin;
+    size_t Size = 0;
 
-    const size_t Size = strlen(String);
+    while (1)
+    {
+        if constexpr (ReadBoundsCheck)
+            if (String > Data + CurrentAllocated)
+                throw std::runtime_error("out of bounds read");
+        if (*String++ != '\0')
+            Size++;
+        else
+            break;
+    };
+
     Offset += Size;
-    return std::string(String, Size);
+
+    return std::string(Begin, Size);
 };
 
 std::string Bitstream::ReadEncString()
 {
     const size_t Size = ReadEnc<size_t>();
 
+    if constexpr (ReadBoundsCheck)
+        if (Offset + Size > CurrentAllocated)
+            throw std::runtime_error("out of bounds read");
+
     std::string String = std::string(Data + Offset, Size);
+
     Offset += Size;
     return String;
 };
 
-void Bitstream::FlushToFile(const std::string Filename, int Filemode = std::ios::trunc | std::ios::binary)
+void Bitstream::FlushToFile(const std::string Filename, std::ios::openmode Filemode = std::ios::trunc | std::ios::binary)
 {
     std::ofstream F(Filename, Filemode);
     F.write(Data, Offset);

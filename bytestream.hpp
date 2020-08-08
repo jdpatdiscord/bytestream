@@ -34,7 +34,7 @@ public:
 	inline void WriteEncString(const std::string& String, const size_t Size);
 	std::string ReadString();
 	std::string ReadEncString();
-	void FlushToFile(const std::string Filename, int Filemode = std::ios::trunc | std::ios::binary);
+	void FlushToFile(const std::string Filename, std::ios::openmode Filemode = std::ios::trunc | std::ios::binary);
 
 	~Bitstream();
 }

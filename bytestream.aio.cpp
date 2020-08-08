@@ -1,9 +1,12 @@
 #include <cstdlib>
+#include <iostream>
 #include <type_traits>
 #include <string>
 #include <fstream>
 #include <cstring>
 #include <stdexcept>
+
+constexpr bool ReadBoundsCheck = false;
 
 class Bitstream
 {
@@ -14,20 +17,17 @@ private:
 
     inline void ResizeNeeded(const size_t SizeNeeded)
     {
-        if (CurrentAllocated < SizeNeeded)
-        {
-            CurrentAllocated *= 2;
-            if (CurrentAllocated < SizeNeeded) /* Double buffer until size met */
-                ResizeNeeded(SizeNeeded);
-            Data = (char*)realloc(Data, CurrentAllocated);
-            if (!Data)
-                throw std::runtime_error("realloc returned invalid pointer");
-        };
+        while (CurrentAllocated < SizeNeeded)
+            CurrentAllocated <<= 1;
+
+        Data = (char*)realloc(Data, CurrentAllocated);
+        if (!Data)
+            throw std::runtime_error("realloc returned invalid memory");
     };
 
 public:
     Bitstream(const Bitstream&) = delete;
-    
+
     Bitstream() : Offset(0), CurrentAllocated(1)
     {
         Data = (char*)malloc(1); /* Initial buffer for realloc to operate later */
@@ -35,15 +35,13 @@ public:
 
     void Preallocate(const size_t Size)
     {
-        Data = Data ? realloc(CurrentAllocated += Size) : (char*)malloc(Size);
+        Data = (char*)realloc(Data, CurrentAllocated += Size);
         if (!Data)
             throw std::runtime_error("malloc returned invalid pointer");
     };
 
     template <typename T> void WriteArray(T* Array, const size_t Count)
     {
-        static_assert(std::is_pointer_v<T>, "not an array (pointer)");
-
         const size_t Size = Count * sizeof(T);
 
         const size_t NewSize = Offset + Size;
@@ -70,6 +68,10 @@ public:
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
+        if constexpr (ReadBoundsCheck)
+            if (Offset >= CurrentAllocated)
+                throw std::runtime_error("out of bounds read");
+
         T Value = *(T*)(Data + Offset);
         Offset += sizeof(T);
         return Value;
@@ -84,6 +86,10 @@ public:
 
         while (true)
         {
+            if constexpr (ReadBoundsCheck)
+                if (Offset > CurrentAllocated)
+                    throw std::runtime_error("out of bounds read");
+
             auto Byte = *(Data + Offset++);
             Value |= (Byte & 0x7f) << Shift;
             Shift += 7;
@@ -169,27 +175,43 @@ public:
     inline void WriteEncString(const char* String, const size_t Size)
     {
         WriteEnc<size_t>(Size);
-        WriteArray<char>(String, Size);
+        WriteArray<const char>(String, Size);
     }
     inline void WriteEncString(const std::string& String, const size_t Size)
     {
         WriteEnc<size_t>(Size);
-        WriteArray<char>(String.c_str(), Size);
+        WriteArray<const char>(String.c_str(), Size);
     };
 
     std::string ReadString()
     {
-        auto String = Data + Offset;
-        const size_t Size = strlen(String);
+        auto Begin = Data + Offset;
+        auto String = Begin;
+        size_t Size = 0;
+
+        while (1)
+        {
+            if constexpr (ReadBoundsCheck)
+                if (String > Data + CurrentAllocated)
+                    throw std::runtime_error("out of bounds read");
+            if (*String++ != '\0')
+                Size++;
+            else
+                break;
+        };
 
         Offset += Size;
 
-        return std::string(String, Size);
+        return std::string(Begin, Size);
     };
 
     std::string ReadEncString()
     {
         const size_t Size = ReadEnc<size_t>();
+
+        if constexpr (ReadBoundsCheck)
+            if (Offset + Size > CurrentAllocated)
+                throw std::runtime_error("out of bounds read");
 
         std::string String = std::string(Data + Offset, Size);
 
@@ -197,7 +219,7 @@ public:
         return String;
     };
 
-    void FlushToFile(const std::string Filename, int Filemode = std::ios::trunc | std::ios::binary)
+    void FlushToFile(const std::string Filename, std::ios::openmode Filemode = std::ios::trunc | std::ios::binary)
     {
         std::ofstream F(Filename, Filemode);
         F.write(Data, Offset);

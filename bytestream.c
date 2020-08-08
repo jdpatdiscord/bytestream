@@ -1,13 +1,15 @@
 #include <stdio.h>
+#include <stdlib.h>
 
-struct bitstream
+typedef struct bitstream
 {
 	char* data;
 	size_t offset;
 	size_t curr_alloc;
-};
+} bitstream;
 
-void bytes_needed(long n)
+
+char bytes_needed(long n)
 {
 	size_t size = 0;
 
@@ -86,8 +88,15 @@ void bs_exportfile(bitstream* s, const char* filename)
 
 #define bs_readenc(s, type, ret) \
 	{ \
-		long __v, __s = 0, 0; \
-		while (1) { char b = *(s->data + s->offset++); __v |= (b & 0x7f) << __s; __s += 7; if (b & 0x80) { ret = v; break; }; }; \
+		type __v = 0; size_t __s = 0; \
+		while (1) { \
+			char b = *(s->data + s->offset++); \
+			__v |= (b & 0x7f) << __s; \
+			__s += 7; \
+			if (b & 0x80) { \
+				ret = __v; break; \
+			}; \
+		}; \
 	}
 
 #define bs_writeraw(s, type, var) \
@@ -144,3 +153,25 @@ long bs_readraw_qword(bitstream* s)
 	return v;
 };
 */
+
+int main(int argc, char* argv)
+{
+	bitstream _s;
+	bitstream* s = &_s;
+
+	bs_init(s);
+	bs_writeraw(s, int, 69);
+	bs_writeenc(s, int, 672);
+	bs_exportfile(s, "test.dat");
+	bs_exit(s);
+
+	bs_init(s);
+	bs_importfile(s, "test.dat");
+	int a = 0, b = 0;
+	bs_readraw(s, int, a);
+	bs_readenc(s, int, b);
+	printf("%i %i\n", a, b);
+	bs_exit(s);
+
+	return 0;
+};
