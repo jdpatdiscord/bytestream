@@ -4,9 +4,36 @@
 #include <string>
 #include <fstream>
 #include <cstring>
+#include <filesystem>
 #include <stdexcept>
 
-constexpr bool ReadBoundsCheck = false;
+constexpr bool BoundsCheck = false;
+constexpr bool BufferCheck = false;
+
+/* feature list
+flush to file [y]
+load from file [y]
+read encoded string [y]
+write encoded string [y]
+read string [y]
+write string [y]
+write encoded value [y] 
+write raw value [y]
+read encoded value [y]
+read raw value [y]
+arbitrary read encoded [y]
+arbitrary write encoded [n]
+arbitrary read raw [y]
+arbitrary write raw [y]
+write array [y]
+read array [y]
+*/
+
+uint64_t roundpow2_64(uint64_t n)
+{
+    n |= (n |= (n |= (n |= (n |= (n |= (n >> 1)) >> 2) >> 4) >> 8) >> 16) >> 32;
+    return n + 1; /* 0b0111 -> 0b1000 (2^n instead of 2^n-1) */
+}
 
 class Bitstream
 {
@@ -17,12 +44,14 @@ private:
 
     inline void ResizeNeeded(const size_t SizeNeeded)
     {
-        while (CurrentAllocated < SizeNeeded)
+        while (CurrentAllocated < SizeNeeded) 
             CurrentAllocated <<= 1;
 
         Data = (char*)realloc(Data, CurrentAllocated);
-        if (!Data)
-            throw std::runtime_error("realloc returned invalid memory");
+        
+        if constexpr (BufferCheck)
+            if (!Data)
+                throw std::runtime_error("realloc returned invalid pointer");
     };
 
 public:
@@ -35,9 +64,11 @@ public:
 
     void Preallocate(const size_t Size)
     {
-        Data = (char*)realloc(Data, CurrentAllocated += Size);
-        if (!Data)
-            throw std::runtime_error("malloc returned invalid pointer");
+        Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
+
+        if constexpr (BufferCheck)
+            if (!Data)
+                throw std::runtime_error("malloc returned invalid pointer");
     };
 
     template <typename T> void WriteArray(T* Array, const size_t Count)
@@ -51,6 +82,15 @@ public:
         Offset += Size;
     };
 
+    template <typename T> T* ReadArray(const size_t ElementCount, T* Array = nullptr)
+    {
+        if (!Array)
+            Array = (T*)malloc(sizeof(T) * ElementCount);
+        memcpy(Array, Data + Offset, sizeof(T) * ElementCount);
+        Offset += (sizeof(T) * ElementCount);
+        return Array;
+    }
+
     template <typename T> const size_t EncodedSize(T Value) const
     {
         size_t ValueSize = 0;
@@ -61,14 +101,14 @@ public:
             ValueSize++;
         };
 
-        return ValueSize ? ValueSize : 1; /* If Value == 0, the incrementation of ValueSize never occurs, and that's not good. */
+        return ValueSize + (ValueSize == 0); /* If Value == 0, the incrementation of ValueSize never occurs, and that's not good. */
     };
 
     template <typename T> T ReadRaw()
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
-        if constexpr (ReadBoundsCheck)
+        if constexpr (BoundsCheck)
             if (Offset >= CurrentAllocated)
                 throw std::runtime_error("out of bounds read");
 
@@ -86,15 +126,15 @@ public:
 
         while (true)
         {
-            if constexpr (ReadBoundsCheck)
+            if constexpr (BoundsCheck)
                 if (Offset > CurrentAllocated)
                     throw std::runtime_error("out of bounds read");
 
             auto Byte = *(Data + Offset++);
             Value |= (Byte & 0x7f) << Shift;
-            Shift += 7;
-            if (Byte & 0x80)
+            if ((Byte & 0x80) == 0)
                 return Value;
+            Shift += 7;
         };
     };
 
@@ -104,10 +144,10 @@ public:
 
         if (NextOffset != nullptr)
             *NextOffset = ReadOffset + sizeof(T);
-        if (ReadOffset + sizeof(T) <= Offset)
-            return *(T*)(Data + ReadOffset);
-        else
-            throw std::runtime_error("out of bounds arbitrary read");
+        if constexpr (BoundsCheck)
+            if (ReadOffset + sizeof(T) > ReadOffset)
+                throw std::runtime_error("out of bounds arbitrary read");
+        return *(T*)(Data + ReadOffset);
     };
 
     template <typename T> T ArbitraryReadEnc(size_t ReadOffset, size_t* NextOffset = nullptr)
@@ -116,25 +156,67 @@ public:
 
         auto BeginOffset = ReadOffset;
 
-        if (ReadOffset <= Offset)
-        {
-            T Value = 0;
-            size_t Shift = 0;
+        if constexpr (BoundsCheck)
+            if (ReadOffset + sizeof(T) > Offset)
+                throw std::runtime_error("out of bounds arbitrary read");
 
-            while (true)
-            {
-                auto Byte = *(Data + ReadOffset++);
-                Value |= (Byte & 0x7f) << Shift;
-                Shift += 7;
-                if (Byte & 0x80)
-                    return Value;
-            };
-            if (NextOffset != nullptr)
-                *NextOffset = BeginOffset + (Shift / 7); /* Divides by 7 to get how many bytes iterated */
-        }
-        else
-            throw std::runtime_error("out of bounds arbitrary read");
+        T Value = 0;
+        size_t Shift = 0;
+
+        while (true)
+        {
+            auto Byte = *(Data + ReadOffset++);
+            Value |= (Byte & 0x7f) << Shift;
+            if ((Byte & 0x80) == 0)
+                return Value;
+            Shift += 7;
+        };
+        if (NextOffset != nullptr)
+            *NextOffset = BeginOffset + (Shift / 7); /* Divides by 7 to get how many bytes iterated */
     };
+
+    template <typename T> void ArbitraryWriteRaw(T Value, size_t WriteOffset, size_t* NextOffset = nullptr)
+    {
+        char* NewData = (char*)malloc(Offset + sizeof(T));
+        memcpy(NewData, Data, WriteOffset);
+        *(T*)(NewData + WriteOffset) = Value;
+        memcpy(NewData + WriteOffset + sizeof(T), Data + WriteOffset, Offset - WriteOffset);
+        free(Data);
+        Data = NewData;
+        if (NextOffset != nullptr)
+            *NextOffset = WriteOffset + sizeof(T);
+    };
+
+    template <typename T> void ArbitraryWriteEnc(T Value, size_t WriteOffset, size_t* NextOffset)
+    {
+        char* NewData = malloc(Offset + EncodedSize(Value));
+        memcpy(NewData, Data, WriteOffset); /* first segment */
+
+        auto ConstWriteOffset = WriteOffset;
+
+        while (true)
+        {
+            if (const uint8_t Byte = Value & 0x7f; Byte != Value)
+            {
+                *(NewData + WriteOffset++) = Byte | 0x80;
+                Value >>= 7;
+                continue;
+            }
+            else
+            {
+                *(NewData + WriteOffset++) = Byte;
+                return;
+            };
+        };
+
+        memcpy(NewData + WriteOffset, Data + ConstWriteOffset, Offset - ConstWriteOffset); /* second segment */
+
+        free(Data);
+        Data = NewData;
+
+        if (NextOffset != nullptr)
+            *NextOffset = WriteOffset;
+    }
 
     template <typename T> void WriteRaw(T Value)
     {
@@ -189,9 +271,9 @@ public:
         auto String = Begin;
         size_t Size = 0;
 
-        while (1)
+        while (true)
         {
-            if constexpr (ReadBoundsCheck)
+            if constexpr (BoundsCheck)
                 if (String > Data + CurrentAllocated)
                     throw std::runtime_error("out of bounds read");
             if (*String++ != '\0')
@@ -209,7 +291,7 @@ public:
     {
         const size_t Size = ReadEnc<size_t>();
 
-        if constexpr (ReadBoundsCheck)
+        if constexpr (BoundsCheck)
             if (Offset + Size > CurrentAllocated)
                 throw std::runtime_error("out of bounds read");
 
@@ -225,6 +307,21 @@ public:
         F.write(Data, Offset);
         F.close();
     };
+
+    void LoadFromFile(const std::string Filename)
+    {
+        std::ifstream F(Filename, std::ios::binary);
+        auto Filesize = std::filesystem::file_size(Filename);
+        if (Data)
+        {
+            free(Data);
+            Data = (char*)malloc(1);
+        }
+        Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(Filesize));
+        Offset = Filesize; /* Indicate size with Offset */
+        F.read(Data, Filesize);
+        F.close();
+    }
 
     ~Bitstream()
     {
