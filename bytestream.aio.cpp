@@ -29,7 +29,7 @@ write array [y]
 read array [y]
 */
 
-uint64_t roundpow2_64(uint64_t n)
+inline uint64_t roundpow2_64(uint64_t n)
 {
     n |= (n |= (n |= (n |= (n |= (n |= (n >> 1)) >> 2) >> 4) >> 8) >> 16) >> 32;
     return n + 1; /* 0b0111 -> 0b1000 (2^n instead of 2^n-1) */
@@ -39,7 +39,6 @@ class Bitstream
 {
 private:
     char* Data;
-    size_t Offset;
     size_t CurrentAllocated;
 
     inline void ResizeNeeded(const size_t SizeNeeded)
@@ -55,6 +54,8 @@ private:
     };
 
 public:
+    size_t Offset;
+
     Bitstream(const Bitstream&) = delete;
 
     Bitstream() : Offset(0), CurrentAllocated(1)
@@ -71,7 +72,7 @@ public:
                 throw std::runtime_error("malloc returned invalid pointer");
     };
 
-    template <typename T> void WriteArray(T* Array, const size_t Count)
+    template <typename T> inline void WriteArray(T* Array, const size_t Count)
     {
         const size_t Size = Count * sizeof(T);
 
@@ -82,7 +83,7 @@ public:
         Offset += Size;
     };
 
-    template <typename T> T* ReadArray(const size_t ElementCount, T* Array = nullptr)
+    template <typename T> inline T* ReadArray(const size_t ElementCount, T* Array = nullptr)
     {
         if (!Array)
             Array = (T*)malloc(sizeof(T) * ElementCount);
@@ -91,20 +92,20 @@ public:
         return Array;
     }
 
-    template <typename T> const size_t EncodedSize(T Value) const
+    template <typename T> inline size_t EncodedSize(T Value) const
     {
         size_t ValueSize = 0;
 
         while (Value)
         {
             Value >>= 7;
-            ValueSize++;
+            ++ValueSize;
         };
 
         return ValueSize + (ValueSize == 0); /* If Value == 0, the incrementation of ValueSize never occurs, and that's not good. */
     };
 
-    template <typename T> T ReadRaw()
+    template <typename T> inline T ReadRaw()
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
@@ -117,7 +118,7 @@ public:
         return Value;
     };
 
-    template <typename T> T ReadEnc()
+    template <typename T> inline T ReadEnc()
     {
         static_assert(std::is_arithmetic_v<T>, "not an operable type (arithmetic not supported)");
 
@@ -138,7 +139,7 @@ public:
         };
     };
 
-    template <typename T> T ArbitraryReadRaw(const size_t ReadOffset, size_t* NextOffset = nullptr)
+    template <typename T> inline T ArbitraryReadRaw(const size_t ReadOffset, size_t* NextOffset = nullptr)
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
@@ -150,7 +151,7 @@ public:
         return *(T*)(Data + ReadOffset);
     };
 
-    template <typename T> T ArbitraryReadEnc(size_t ReadOffset, size_t* NextOffset = nullptr)
+    template <typename T> inline T ArbitraryReadEnc(size_t ReadOffset, size_t* NextOffset = nullptr)
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
@@ -175,7 +176,7 @@ public:
             *NextOffset = BeginOffset + (Shift / 7); /* Divides by 7 to get how many bytes iterated */
     };
 
-    template <typename T> void ArbitraryWriteRaw(T Value, size_t WriteOffset, size_t* NextOffset = nullptr)
+    template <typename T> inline void ArbitraryWriteRaw(T Value, size_t WriteOffset, size_t* NextOffset = nullptr)
     {
         char* NewData = (char*)malloc(Offset + sizeof(T));
         memcpy(NewData, Data, WriteOffset);
@@ -187,7 +188,7 @@ public:
             *NextOffset = WriteOffset + sizeof(T);
     };
 
-    template <typename T> void ArbitraryWriteEnc(T Value, size_t WriteOffset, size_t* NextOffset)
+    template <typename T> inline void ArbitraryWriteEnc(T Value, size_t WriteOffset, size_t* NextOffset)
     {
         char* NewData = malloc(Offset + EncodedSize(Value));
         memcpy(NewData, Data, WriteOffset); /* first segment */
@@ -218,7 +219,7 @@ public:
             *NextOffset = WriteOffset;
     }
 
-    template <typename T> void WriteRaw(T Value)
+    template <typename T> inline void WriteRaw(T Value)
     {
         static_assert(std::is_scalar_v<T>, "not an operable type (non-scalar)");
 
@@ -231,7 +232,7 @@ public:
         Offset += Size;
     };
 
-    template <typename T> void WriteEnc(T Value)
+    template <typename T> inline void WriteEnc(T Value)
     {
         static_assert(std::is_arithmetic_v<T>, "not an operable type (arithmetic not supported)");
 
@@ -248,7 +249,7 @@ public:
             }
             else
             {
-                *(Data + Offset++) = Byte;
+                *(Data + Offset++) = Byte; 
                 return;
             };
         };
@@ -265,7 +266,7 @@ public:
         WriteArray<const char>(String.c_str(), Size);
     };
 
-    std::string ReadString()
+    inline std::string ReadString()
     {
         auto Begin = Data + Offset;
         auto String = Begin;
@@ -277,7 +278,7 @@ public:
                 if (String > Data + CurrentAllocated)
                     throw std::runtime_error("out of bounds read");
             if (*String++ != '\0')
-                Size++;
+                ++Size;
             else
                 break;
         };
@@ -287,7 +288,7 @@ public:
         return std::string(Begin, Size);
     };
 
-    std::string ReadEncString()
+    inline std::string ReadEncString()
     {
         const size_t Size = ReadEnc<size_t>();
 
@@ -321,6 +322,11 @@ public:
         Offset = Filesize; /* Indicate size with Offset */
         F.read(Data, Filesize);
         F.close();
+    }
+
+    void Rewind()
+    {
+        Offset = 0;
     }
 
     ~Bitstream()
