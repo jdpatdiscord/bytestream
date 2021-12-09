@@ -328,6 +328,18 @@ public:
         F.close();
     }
 
+    template <typename T> inline T& GetAllocatedRef()
+    {
+        constexpr size_t Size = sizeof(T);
+
+        const size_t NewSize = Offset + Size;
+        ResizeNeeded(NewSize);
+
+        T& Ref = *(T*)(Data + Offset);
+        Offset += Size;
+        return Ref;
+    }
+
     void Rewind()
     {
         Offset = 0;
