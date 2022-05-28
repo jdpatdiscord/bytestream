@@ -89,6 +89,11 @@ public:
     template <typename T> inline T* ReadArray(const size_t ElementCount, T* Array = nullptr)
     {
         const size_t ArraySize = sizeof(T) * ElementCount;
+
+        if constexpr (BoundsCheck)
+            if (Offset + ArraySize > CurrentAllocated)
+                throw std::runtime_error("out of bounds read");
+
         if (Array == NULL)
             Array = (T*)malloc(ArraySize);
         memcpy(Array, Data + Offset, ArraySize);
@@ -114,7 +119,7 @@ public:
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
         if constexpr (BoundsCheck)
-            if (Offset >= CurrentAllocated)
+            if (Offset + sizeof(T) > CurrentAllocated)
                 throw std::runtime_error("out of bounds read");
 
         T Value = *(T*)(Data + Offset);
