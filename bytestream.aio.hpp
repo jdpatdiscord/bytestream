@@ -10,6 +10,11 @@
 #include <filesystem>
 #include <stdexcept>
 
+#if defined(_WIN32)
+#include <Windows.h>
+#include <winternl.h>
+#endif
+
 constexpr bool BoundsCheck = false;
 constexpr bool BufferCheck = false;
 
@@ -20,12 +25,12 @@ read encoded string [y]
 write encoded string [y]
 read string [y]
 write string [y]
-write encoded value [y] 
+write encoded value [y]
 write raw value [y]
 read encoded value [y]
 read raw value [y]
 arbitrary read encoded [y]
-arbitrary write encoded [n]
+arbitrary write encoded [y]
 arbitrary read raw [y]
 arbitrary write raw [y]
 write array [y]
@@ -41,19 +46,33 @@ inline uint64_t roundpow2_64(uint64_t n)
 class Bitstream
 {
 private:
-    char* Data;
+    char* __restrict Data;
     size_t CurrentAllocated;
 
     inline void ResizeNeeded(const size_t SizeNeeded)
     {
-        while (CurrentAllocated < SizeNeeded) 
+        auto CurrentAllocCache = CurrentAllocated;
+        while (CurrentAllocated < SizeNeeded)
             CurrentAllocated <<= 1;
-
-        Data = (char*)realloc(Data, CurrentAllocated);
-        
-        if constexpr (BufferCheck)
-            if (!Data)
-                throw std::runtime_error("realloc returned invalid pointer");
+        if (CurrentAllocated != CurrentAllocCache) [[unlikely]]
+        {
+            if constexpr (BufferCheck)
+            {
+                // Safe
+                auto BufferCache = Data;
+                Data = (char*)realloc(Data, CurrentAllocated);
+                if (!Data)
+                {
+                    free(BufferCache);
+                    throw std::runtime_error("realloc returned invalid pointer");
+                }
+            }
+            else
+            {
+                // Unsafe
+                Data = (char*)realloc(Data, CurrentAllocated);
+            }
+        }
     };
 
 public:
@@ -68,14 +87,24 @@ public:
 
     void Preallocate(const size_t Size)
     {
-        Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
 
         if constexpr (BufferCheck)
-            if (!Data)
+        {
+            auto BufferCache = Data;
+            Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
+            if (!Data) [[unlikely]]
+            {
+                free(BufferCache);
                 throw std::runtime_error("malloc returned invalid pointer");
+            }
+        }
+        else
+        {
+            Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
+        }
     };
 
-    template <typename T> inline void WriteArray(T* Array, const size_t Count)
+    template <typename T> inline void WriteArray(T* __restrict Array, const size_t Count)
     {
         const size_t Size = Count * sizeof(T);
 
@@ -86,16 +115,23 @@ public:
         Offset += Size;
     };
 
-    template <typename T> inline T* ReadArray(const size_t ElementCount, T* Array = nullptr)
+    template <typename T> inline T* ReadArray(const size_t ElementCount, T* __restrict Array = nullptr)
     {
         const size_t ArraySize = sizeof(T) * ElementCount;
 
         if constexpr (BoundsCheck)
-            if (Offset + ArraySize > CurrentAllocated)
+            if (Offset + ArraySize > CurrentAllocated) [[unlikely]]
                 throw std::runtime_error("out of bounds read");
 
         if (Array == NULL)
             Array = (T*)malloc(ArraySize);
+        if constexpr (BufferCheck)
+        {
+            if (!Array) [[unlikely]]
+            {
+                throw std::runtime_error("malloc returned invalid pointer");
+            }
+        }
         memcpy(Array, Data + Offset, ArraySize);
         Offset += (ArraySize);
         return Array;
@@ -119,7 +155,7 @@ public:
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
         if constexpr (BoundsCheck)
-            if (Offset + sizeof(T) > CurrentAllocated)
+            if (Offset + sizeof(T) > CurrentAllocated) [[unlikely]]
                 throw std::runtime_error("out of bounds read");
 
         T Value = *(T*)(Data + Offset);
@@ -137,7 +173,7 @@ public:
         while (true)
         {
             if constexpr (BoundsCheck)
-                if (Offset > CurrentAllocated)
+                if (Offset > CurrentAllocated) [[unlikely]]
                     throw std::runtime_error("out of bounds read");
 
             auto Byte = *(Data + Offset++);
@@ -148,26 +184,26 @@ public:
         };
     };
 
-    template <typename T> inline T ArbitraryReadRaw(const size_t ReadOffset, size_t* NextOffset = nullptr)
+    template <typename T> inline T ArbitraryReadRaw(const size_t ReadOffset, size_t* __restrict NextOffset = nullptr)
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
         if (NextOffset != nullptr)
             *NextOffset = ReadOffset + sizeof(T);
         if constexpr (BoundsCheck)
-            if (ReadOffset + sizeof(T) > ReadOffset)
+            if (ReadOffset + sizeof(T) > ReadOffset) [[unlikely]]
                 throw std::runtime_error("out of bounds arbitrary read");
         return *(T*)(Data + ReadOffset);
     };
 
-    template <typename T> inline T ArbitraryReadEnc(size_t ReadOffset, size_t* NextOffset = nullptr)
+    template <typename T> inline T ArbitraryReadEnc(size_t ReadOffset, size_t* __restrict NextOffset = nullptr)
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
 
         auto BeginOffset = ReadOffset;
 
         if constexpr (BoundsCheck)
-            if (ReadOffset + sizeof(T) > Offset)
+            if (ReadOffset + sizeof(T) > Offset) [[unlikely]]
                 throw std::runtime_error("out of bounds arbitrary read");
 
         T Value = 0;
@@ -185,9 +221,16 @@ public:
             *NextOffset = BeginOffset + (Shift / 7); /* Divides by 7 to get how many bytes iterated */
     };
 
-    template <typename T> inline void ArbitraryWriteRaw(T Value, size_t WriteOffset, size_t* NextOffset = nullptr)
+    template <typename T> inline void ArbitraryWriteRaw(T Value, size_t WriteOffset, size_t* __restrict NextOffset = nullptr)
     {
         char* NewData = (char*)malloc(Offset + sizeof(T));
+        if constexpr (BufferCheck)
+        {
+            if (!NewData) [[unlikely]]
+            {
+                throw std::runtime_error("malloc returned invalid pointer");
+            }
+        }
         memcpy(NewData, Data, WriteOffset);
         *(T*)(NewData + WriteOffset) = Value;
         memcpy(NewData + WriteOffset + sizeof(T), Data + WriteOffset, Offset - WriteOffset);
@@ -197,9 +240,16 @@ public:
             *NextOffset = WriteOffset + sizeof(T);
     };
 
-    template <typename T> inline void ArbitraryWriteEnc(T Value, size_t WriteOffset, size_t* NextOffset)
+    template <typename T> inline void ArbitraryWriteEnc(T Value, size_t WriteOffset, size_t* __restrict NextOffset)
     {
-        char* NewData = malloc(Offset + EncodedSize(Value));
+        char* __restrict NewData = malloc(Offset + EncodedSize(Value));
+        if constexpr (BufferCheck)
+        {
+            if (!NewData) [[unlikely]]
+            {
+                throw std::runtime_error("malloc returned invalid pointer");
+            }
+        }
         memcpy(NewData, Data, WriteOffset); /* first segment */
 
         auto ConstWriteOffset = WriteOffset;
@@ -258,13 +308,13 @@ public:
             }
             else
             {
-                *(Data + Offset++) = Byte; 
+                *(Data + Offset++) = Byte;
                 return;
             };
         };
     };
 
-    inline void WriteEncString(const char* String, const size_t Size)
+    inline void WriteEncString(const char* __restrict String, const size_t Size)
     {
         WriteEnc<size_t>(Size);
         WriteArray<const char>(String, Size);
@@ -284,7 +334,7 @@ public:
         while (true)
         {
             if constexpr (BoundsCheck)
-                if (String > Data + CurrentAllocated)
+                if (String > Data + CurrentAllocated) [[unlikely]]
                     throw std::runtime_error("out of bounds read");
             if (*String++ != '\0')
                 ++Size;
@@ -302,7 +352,7 @@ public:
         const size_t Size = ReadEnc<size_t>();
 
         if constexpr (BoundsCheck)
-            if (Offset + Size > CurrentAllocated)
+            if (Offset + Size > CurrentAllocated) [[unlikely]]
                 throw std::runtime_error("out of bounds read");
 
         std::string String = std::string(Data + Offset, Size);
@@ -327,7 +377,16 @@ public:
             free(Data);
             Data = (char*)malloc(1);
         }
+        auto BufferCache = Data;
         Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(Filesize));
+        if constexpr (BufferCheck)
+        {
+            if (!Data) [[unlikely]]
+            {
+                free(BufferCache);
+                throw std::runtime_error("malloc returned invalid pointer");
+            }
+        }
         Offset = Filesize; /* Indicate size with Offset */
         F.read(Data, Filesize);
         F.close();
