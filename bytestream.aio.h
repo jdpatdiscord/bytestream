@@ -8,14 +8,12 @@ const int bounds_check = 0;
 #include <stdlib.h>
 #include <stdio.h>
 
-// paranoid programming for any people that really need C
-
-//typedef long long I64;
+typedef long long I64;
 typedef int       I32;
 typedef short     I16;
 typedef char      I8;
 
-//typedef unsigned long long U64;
+typedef unsigned long long U64;
 typedef unsigned int       U32;
 typedef unsigned short     U16;
 typedef unsigned char      U8;
@@ -89,16 +87,19 @@ void bs_free(struct bitstream* bs)
 void bs_prealloc(struct bitstream* bs, MAXINT size)
 {
 	bs->current_allocated = roundpow2(size);
-	bs->data = realloc(bs->data, bs->current_allocated);
+	if (bs->data != NULL)
+		bs->data = realloc(bs->data, bs->current_allocated);
+	else
+		bs->data = malloc(bs->current_allocated);
 }
 
 void bs_resize(struct bitstream* bs, MAXINT size)
 {
+	MAXINT current_allocated_cache = bs->current_allocated;
 	while (bs->current_allocated < size)
-	{
 		bs->current_allocated <<= 1;
-	}
-	bs->data = (U8*)realloc(bs->data, bs->current_allocated);
+	if (current_allocated_cache != bs->current_allocated)
+		bs->data = (U8*)realloc(bs->data, bs->current_allocated);
 }
 
 MAXINT bs_readenc(struct bitstream* bs)
@@ -139,12 +140,12 @@ U32 bs_read32(struct bitstream* bs)
 	return value;
 }
 
-//U64 bs_read64(struct bitstream* bs)
-//{
-//	U64 value = *(U64*)(bs->data + bs->offset);
-//	bs->offset += 8;
-//	return value;
-//}
+U64 bs_read64(struct bitstream* bs)
+{
+	U64 value = *(U64*)(bs->data + bs->offset);
+	bs->offset += 8;
+	return value;
+}
 
 void bs_writeenc(struct bitstream* bs, MAXINT value)
 {
@@ -185,11 +186,11 @@ void bs_write32(struct bitstream* bs, U32 value)
 	bs->offset += 4;
 }
 
-//void bs_write32(struct bitstream* bs, U64 value)
-//{
-//	*(U64*)(bs->data + bs->offset) = value;
-//	bs->offset += 8;
-//}
+void bs_write64(struct bitstream* bs, U64 value)
+{
+	*(U64*)(bs->data + bs->offset) = value;
+	bs->offset += 8;
+}
 
 
 #endif

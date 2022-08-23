@@ -37,6 +37,24 @@ write array [y]
 read array [y]
 */
 
+inline void* malloc_Impl(size_t Size)
+{
+    return malloc(Size);
+}
+inline void* realloc_Impl(void* Buffer, size_t NewSize)
+{
+    return realloc(Buffer, NewSize);
+}
+inline void free_Impl(void* Buffer)
+{
+    free(Buffer);
+
+    return;
+}
+inline void* memcpy_Impl(void* dst, void* src, size_t size)
+{
+    return memcpy(dst, src, size);
+}
 inline uint64_t roundpow2_64(uint64_t n)
 {
     n |= (n |= (n |= (n |= (n |= (n |= (n >> 1)) >> 2) >> 4) >> 8) >> 16) >> 32;
@@ -60,17 +78,17 @@ private:
             {
                 // Safe
                 auto BufferCache = Data;
-                Data = (char*)realloc(Data, CurrentAllocated);
-                if (!Data)
+                Data = (char*)realloc_Impl(Data, CurrentAllocated);
+                if (Data == NULL)
                 {
-                    free(BufferCache);
+                    free_Impl(BufferCache);
                     throw std::runtime_error("realloc returned invalid pointer");
                 }
             }
             else
             {
                 // Unsafe
-                Data = (char*)realloc(Data, CurrentAllocated);
+                Data = (char*)realloc_Impl(Data, CurrentAllocated);
             }
         }
     };
@@ -82,28 +100,37 @@ public:
 
     Bitstream() : Offset(0), CurrentAllocated(1)
     {
-        Data = (char*)malloc(1); /* Initial buffer for realloc to operate later */
+        Data = (char*)malloc_Impl(1); /* Initial buffer for realloc to operate later */
     };
 
+    /// <summary>
+    /// Guarantees a preallocated amount of memory in the bitstream.
+    /// </summary>
+    /// <param name="Size"></param>
     void Preallocate(const size_t Size)
     {
 
         if constexpr (BufferCheck)
         {
             auto BufferCache = Data;
-            Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
-            if (!Data) [[unlikely]]
+            Data = (char*)realloc_Impl(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
+            if (Data == NULL) [[unlikely]]
             {
-                free(BufferCache);
+                free_Impl(BufferCache);
                 throw std::runtime_error("malloc returned invalid pointer");
             }
         }
         else
         {
-            Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
+            Data = (char*)realloc_Impl(Data, CurrentAllocated = roundpow2_64(CurrentAllocated + Size)); /* Keep buffer power of 2 */
         }
     };
 
+    /// <summary>
+    /// Writes data to the bitstream utilizing the type of the array iff type size can be inferred by `sizeof`.
+    /// </summary>
+    /// <param name="Array">Pointer of the array that will be copied</param>
+    /// <param name="Count">Number of elements in the array</param>
     template <typename T> inline void WriteArray(T* __restrict Array, const size_t Count)
     {
         const size_t Size = Count * sizeof(T);
@@ -111,11 +138,16 @@ public:
         const size_t NewSize = Offset + Size;
         ResizeNeeded(NewSize);
 
-        memcpy(Data + Offset, Array, Size);
+        memcpy_Impl(Data + Offset, Array, Size);
         Offset += Size;
     };
 
-    template <typename T> inline T* ReadArray(const size_t ElementCount, T* __restrict Array = nullptr)
+    /// <summary>
+    /// Reads data from the bitstream utilizing the type of the requested array and element count to calculate total bytes read.
+    /// </summary>
+    /// <param name="Array">Pointer to the array that will be written to</param>
+    /// <param name="Count">Number of elements in the array</param>
+    template <typename T> inline void ReadArray(T* __restrict Array, const size_t ElementCount)
     {
         const size_t ArraySize = sizeof(T) * ElementCount;
 
@@ -123,20 +155,23 @@ public:
             if (Offset + ArraySize > CurrentAllocated) [[unlikely]]
                 throw std::runtime_error("out of bounds read");
 
-        if (Array == NULL)
-            Array = (T*)malloc(ArraySize);
         if constexpr (BufferCheck)
         {
-            if (!Array) [[unlikely]]
+            if (Array == NULL) [[unlikely]]
             {
-                throw std::runtime_error("malloc returned invalid pointer");
+                throw std::runtime_error("`Array` parameter is NULL");
             }
         }
-        memcpy(Array, Data + Offset, ArraySize);
+        memcpy_Impl(Array, Data + Offset, ArraySize);
         Offset += (ArraySize);
-        return Array;
+
+        return;
     }
 
+    /// <summary>
+    /// Provides the number of bytes needed to write a LEB128-encoded value.
+    /// </summary>
+    /// <param name="Value">Primitive number to be used</param>
     template <typename T> inline size_t EncodedSize(T Value) const
     {
         size_t ValueSize = 0;
@@ -150,6 +185,9 @@ public:
         return ValueSize + (ValueSize == 0); /* If Value == 0, the incrementation of ValueSize never occurs, and that's not good. */
     };
 
+    /// <summary>
+    /// Reads a primitive type from the bitstream.
+    /// </summary>
     template <typename T> inline T ReadRaw()
     {
         static_assert(std::is_scalar_v<T>, "not a trivial (scalar) type");
@@ -163,6 +201,9 @@ public:
         return Value;
     };
 
+    /// <summary>
+    /// Reads a LEB-128 encoded primitive type from the bitstream.
+    /// </summary>
     template <typename T> inline T ReadEnc()
     {
         static_assert(std::is_arithmetic_v<T>, "not an operable type (arithmetic not supported)");
@@ -223,18 +264,18 @@ public:
 
     template <typename T> inline void ArbitraryWriteRaw(T Value, size_t WriteOffset, size_t* __restrict NextOffset = nullptr)
     {
-        char* NewData = (char*)malloc(Offset + sizeof(T));
+        char* NewData = (char*)malloc_Impl(Offset + sizeof(T));
         if constexpr (BufferCheck)
         {
-            if (!NewData) [[unlikely]]
+            if (NewData == NULL) [[unlikely]]
             {
                 throw std::runtime_error("malloc returned invalid pointer");
             }
         }
-        memcpy(NewData, Data, WriteOffset);
+        memcpy_Impl(NewData, Data, WriteOffset);
         *(T*)(NewData + WriteOffset) = Value;
-        memcpy(NewData + WriteOffset + sizeof(T), Data + WriteOffset, Offset - WriteOffset);
-        free(Data);
+        memcpy_Impl(NewData + WriteOffset + sizeof(T), Data + WriteOffset, Offset - WriteOffset);
+        free_Impl(Data);
         Data = NewData;
         if (NextOffset != nullptr)
             *NextOffset = WriteOffset + sizeof(T);
@@ -242,15 +283,15 @@ public:
 
     template <typename T> inline void ArbitraryWriteEnc(T Value, size_t WriteOffset, size_t* __restrict NextOffset)
     {
-        char* __restrict NewData = malloc(Offset + EncodedSize(Value));
+        char* __restrict NewData = malloc_Impl(Offset + EncodedSize(Value));
         if constexpr (BufferCheck)
         {
-            if (!NewData) [[unlikely]]
+            if (NewData == NULL) [[unlikely]]
             {
                 throw std::runtime_error("malloc returned invalid pointer");
             }
         }
-        memcpy(NewData, Data, WriteOffset); /* first segment */
+        memcpy_Impl(NewData, Data, WriteOffset); /* first segment */
 
         auto ConstWriteOffset = WriteOffset;
 
@@ -269,15 +310,18 @@ public:
             };
         };
 
-        memcpy(NewData + WriteOffset, Data + ConstWriteOffset, Offset - ConstWriteOffset); /* second segment */
+        memcpy_Impl(NewData + WriteOffset, Data + ConstWriteOffset, Offset - ConstWriteOffset); /* second segment */
 
-        free(Data);
+        free_Impl(Data);
         Data = NewData;
 
         if (NextOffset != nullptr)
             *NextOffset = WriteOffset;
     }
 
+    /// <summary>
+    /// Writes a raw value to the bitstream. Number of bytes written is based on the type passed.
+    /// </summary>
     template <typename T> inline void WriteRaw(T Value)
     {
         static_assert(std::is_scalar_v<T>, "not an operable type (non-scalar)");
@@ -291,6 +335,9 @@ public:
         Offset += Size;
     };
 
+    /// <summary>
+    /// Writes a LEB-128 encoded value to the bitstream. Number of bytes written is based on the encoded output.
+    /// </summary>
     template <typename T> inline void WriteEnc(T Value)
     {
         static_assert(std::is_arithmetic_v<T>, "not an operable type (arithmetic not supported)");
@@ -314,17 +361,27 @@ public:
         };
     };
 
+    /// <summary>
+    /// Helper function that writes size of string (equiv. to WriteEnc) followed by the actual string. Useful in programs that need to parse quickly.
+    /// </summary>
     inline void WriteEncString(const char* __restrict String, const size_t Size)
     {
         WriteEnc<size_t>(Size);
         WriteArray<const char>(String, Size);
     }
+
+    /// <summary>
+    /// Helper function that writes size of string (equiv. to WriteEnc) followed by the actual string. Useful in programs that need to parse quickly.
+    /// </summary>
     inline void WriteEncString(const std::string& String, const size_t Size)
     {
         WriteEnc<size_t>(Size);
         WriteArray<const char>(String.c_str(), Size);
     };
 
+    /// <summary>
+    /// Reads and returns a null-terminated string. 
+    /// </summary>
     inline std::string ReadString()
     {
         auto Begin = Data + Offset;
@@ -347,6 +404,9 @@ public:
         return std::string(Begin, Size);
     };
 
+    /// <summary>
+    /// Reads and returns a length-prefixed (LEB-128) string.
+    /// </summary>
     inline std::string ReadEncString()
     {
         const size_t Size = ReadEnc<size_t>();
@@ -361,6 +421,9 @@ public:
         return String;
     };
 
+    /// <summary>
+    /// Writes current buffer to a file. If a file exists of the same name, it is overwritten.
+    /// </summary>
     void FlushToFile(const std::string Filename, std::ios::openmode Filemode = std::ios::trunc | std::ios::binary)
     {
         std::ofstream F(Filename, Filemode);
@@ -368,22 +431,25 @@ public:
         F.close();
     };
 
+    /// <summary>
+    /// Reads a file from disk into the internal buffer.
+    /// </summary>
     void LoadFromFile(const std::string Filename)
     {
         std::ifstream F(Filename, std::ios::binary);
         auto Filesize = std::filesystem::file_size(Filename);
         if (Data)
         {
-            free(Data);
-            Data = (char*)malloc(1);
+            free_Impl(Data);
+            Data = (char*)malloc_Impl(1);
         }
         auto BufferCache = Data;
-        Data = (char*)realloc(Data, CurrentAllocated = roundpow2_64(Filesize));
+        Data = (char*)realloc_Impl(Data, CurrentAllocated = roundpow2_64(Filesize));
         if constexpr (BufferCheck)
         {
-            if (!Data) [[unlikely]]
+            if (Data == NULL) [[unlikely]]
             {
-                free(BufferCache);
+                free_Impl(BufferCache);
                 throw std::runtime_error("malloc returned invalid pointer");
             }
         }
@@ -411,7 +477,8 @@ public:
 
     ~Bitstream()
     {
-        free(Data);
+        free_Impl(Data);
+        Data = NULL;
     };
 };
 
