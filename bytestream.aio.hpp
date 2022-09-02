@@ -41,20 +41,23 @@ inline void* malloc_Impl(size_t Size)
 {
     return malloc(Size);
 }
+
 inline void* realloc_Impl(void* Buffer, size_t NewSize)
 {
     return realloc(Buffer, NewSize);
 }
+
 inline void free_Impl(void* Buffer)
 {
     free(Buffer);
-
     return;
 }
-inline void* memcpy_Impl(void* dst, void* src, size_t size)
+
+inline void* memmove_Impl(void* __restrict dst, void* __restrict src, size_t size)
 {
-    return memcpy(dst, src, size);
+    return memmove(dst, src, size);
 }
+
 inline uint64_t roundpow2_64(uint64_t n)
 {
     n |= (n |= (n |= (n |= (n |= (n |= (n >> 1)) >> 2) >> 4) >> 8) >> 16) >> 32;
@@ -63,7 +66,8 @@ inline uint64_t roundpow2_64(uint64_t n)
 
 class Bitstream
 {
-private:
+public:
+    size_t Offset;
     char* __restrict Data;
     size_t CurrentAllocated;
 
@@ -93,14 +97,11 @@ private:
         }
     };
 
-public:
-    size_t Offset;
-
     Bitstream(const Bitstream&) = delete;
 
-    Bitstream() : Offset(0), CurrentAllocated(1)
+    Bitstream() : Offset(0), CurrentAllocated(16)
     {
-        Data = (char*)malloc_Impl(1); /* Initial buffer for realloc to operate later */
+        Data = (char*)malloc_Impl(16); /* Initial buffer for realloc to operate later */
     };
 
     /// <summary>
@@ -138,7 +139,7 @@ public:
         const size_t NewSize = Offset + Size;
         ResizeNeeded(NewSize);
 
-        memcpy_Impl(Data + Offset, Array, Size);
+        memmove_Impl(Data + Offset, (void*)Array, Size);
         Offset += Size;
     };
 
@@ -162,7 +163,7 @@ public:
                 throw std::runtime_error("`Array` parameter is NULL");
             }
         }
-        memcpy_Impl(Array, Data + Offset, ArraySize);
+        memmove_Impl(Array, Data + Offset, ArraySize);
         Offset += (ArraySize);
 
         return;
@@ -272,9 +273,9 @@ public:
                 throw std::runtime_error("malloc returned invalid pointer");
             }
         }
-        memcpy_Impl(NewData, Data, WriteOffset);
+        memmove_Impl(NewData, Data, WriteOffset);
         *(T*)(NewData + WriteOffset) = Value;
-        memcpy_Impl(NewData + WriteOffset + sizeof(T), Data + WriteOffset, Offset - WriteOffset);
+        memmove_Impl(NewData + WriteOffset + sizeof(T), Data + WriteOffset, Offset - WriteOffset);
         free_Impl(Data);
         Data = NewData;
         if (NextOffset != nullptr)
@@ -291,7 +292,7 @@ public:
                 throw std::runtime_error("malloc returned invalid pointer");
             }
         }
-        memcpy_Impl(NewData, Data, WriteOffset); /* first segment */
+        memmove_Impl(NewData, Data, WriteOffset); /* first segment */
 
         auto ConstWriteOffset = WriteOffset;
 
@@ -310,7 +311,7 @@ public:
             };
         };
 
-        memcpy_Impl(NewData + WriteOffset, Data + ConstWriteOffset, Offset - ConstWriteOffset); /* second segment */
+        memmove_Impl(NewData + WriteOffset, Data + ConstWriteOffset, Offset - ConstWriteOffset); /* second segment */
 
         free_Impl(Data);
         Data = NewData;
@@ -441,16 +442,19 @@ public:
         if (Data)
         {
             free_Impl(Data);
-            Data = (char*)malloc_Impl(1);
+            Data = (char*)malloc_Impl(CurrentAllocated = roundpow2_64(Filesize));
         }
-        auto BufferCache = Data;
-        Data = (char*)realloc_Impl(Data, CurrentAllocated = roundpow2_64(Filesize));
-        if constexpr (BufferCheck)
+        else
         {
-            if (Data == NULL) [[unlikely]]
+            auto BufferCache = Data;
+            Data = (char*)realloc_Impl(Data, CurrentAllocated = roundpow2_64(Filesize));
+            if constexpr (BufferCheck)
             {
-                free_Impl(BufferCache);
-                throw std::runtime_error("malloc returned invalid pointer");
+                if (Data == NULL) [[unlikely]]
+                {
+                    free_Impl(BufferCache);
+                    throw std::runtime_error("malloc returned invalid pointer");
+                }
             }
         }
         Offset = Filesize; /* Indicate size with Offset */
