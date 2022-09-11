@@ -60,8 +60,16 @@ inline void* memmove_Impl(void* __restrict dst, void* __restrict src, size_t siz
 
 inline uint64_t roundpow2_64(uint64_t n)
 {
+#if defined(_MSC_VER) && !defined(__clang__) // plain MSVC
+    unsigned long t = 0;
+    _BitScanReverse64(&t, n);
+    return t + 1;
+#elif defined(__clang__) || defined(__GNUC__) // clang-cl (VisualStudio), clang, gcc
+    return 1 << (64 - __builtin_clzll(n));
+#else
     n |= (n |= (n |= (n |= (n |= (n |= (n >> 1)) >> 2) >> 4) >> 8) >> 16) >> 32;
     return n + 1; /* 0b0111 -> 0b1000 (2^n instead of 2^n-1) */
+#endif
 }
 
 class Bitstream
